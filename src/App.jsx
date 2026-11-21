@@ -28,7 +28,9 @@ const nextOptions = (r, role) => {
   if (role === 'buyer') o = o.filter(s => !SUPPLIER_ONLY.includes(s))
   return o
 }
-const Badge = ({ s }) => <span className={'badge ' + s}>{hu(s)}</span>
+const Badge = ({ s, t }) => <span className={'badge ' + s}>{t || hu(s)}</span>
+const ORDER = ['submitted', 'received', 'in_discussion', 'offer_made', 'agreed', 'in_fulfilment', 'completed']
+const ago = d => { const n = Math.floor((Date.now() - new Date(d)) / 864e5); return n < 1 ? 'today' : n === 1 ? '1 day ago' : n + ' days ago' }
 const Inp = ({ label, ...p }) => <label>{label}<input {...p} /></label>
 const Sel = ({ label, opts, ...p }) => (
   <label>{label}<select {...p}><option value="">Select</option>{opts.map(o => (Array.isArray(o) ? <option key={o[0]} value={o[0]}>{o[1]}</option> : <option key={o} value={o}>{hu(o)}</option>))}</select></label>
@@ -77,17 +79,15 @@ function Gate({ roles, children }) {
 function Shell({ children }) {
   const { me } = useMe(), loc = useLocation(), [n, setN] = useState(0)
   useEffect(() => { sb.from('notifications').select('id', { count: 'exact', head: true }).eq('read', false).then(r => setN(r.count || 0)) }, [loc.pathname])
-  const links = me.role === 'buyer' ? [['/browse', 'Browse'], ['/requests', 'My requests']]
-    : me.role === 'supplier' ? [['/my-listings', 'My listings'], ['/requests', 'Requests']]
+  const links = me.role === 'buyer' ? [['/browse', 'Browse'], ['/requests', 'Requests']]
+    : me.role === 'supplier' ? [['/my-listings', 'Listings'], ['/requests', 'Requests']]
     : [['/admin', 'Admin'], ['/browse', 'Browse'], ['/requests', 'Requests']]
   return (
     <>
-      <header className="top"><div className="wrap">
-        <b>EFIA</b>
-        {links.map(([to, t]) => <NavLink key={to} to={to} className={({ isActive }) => (isActive ? 'active' : '')}>{t}</NavLink>)}
-        <NavLink to="/notifications" className={({ isActive }) => (isActive ? 'active' : '')}>Alerts{n ? ` (${n})` : ''}</NavLink>
-        <NavLink to="/profile" className={({ isActive }) => (isActive ? 'active' : '')}>Profile</NavLink>
-        <button onClick={() => sb.auth.signOut()}>Sign out</button>
+      <header className="top"><div className="bar">
+        <Link to="/" className="brand"><img src="/logo.png" alt="" />EFIA</Link>
+        <nav className="bnav">{[...links, ['/notifications', n ? `Alerts (${n})` : 'Alerts'], ['/profile', 'Profile']].map(([to, t]) => <NavLink key={to} to={to} className={({ isActive }) => (isActive ? 'active' : '')}>{t}</NavLink>)}</nav>
+        <Link to="/profile" className="avatar" aria-label="Profile">{(me.contact_name || '?')[0].toUpperCase()}</Link>
       </div></header>
       <main className="wrap">{children}</main>
       <footer>EFIA records and supports sourcing between buyers and suppliers. EFIA does not hold funds and does not guarantee quality, delivery, price or payment.</footer>
@@ -117,7 +117,7 @@ function Auth() {
   }
   return (
     <div className="hero">
-      <div><h1>Cassava and pepper, from supplier to buyer.</h1><p>List what you grow or find supply that fits your order. EFIA reviews listings and records every request through to the outcome.</p></div>
+      <div><img src="/logo.png" width="84" height="84" alt="EFIA" /><h1>Find cassava and pepper supply you can trust.</h1><p>List what you grow or find supply that fits your order. EFIA reviews listings and records every request through to the outcome.</p></div>
       <form className="card" onSubmit={go}>
         <h2>{mode === 'login' ? 'Sign in' : mode === 'register' ? 'Create account' : 'Reset password'}</h2>
         {mode === 'register' && <>
@@ -182,19 +182,20 @@ function Profile() {
       {!isAdmin && <><label>{me.role === 'buyer' ? 'Commodities you need *' : 'Commodities you supply *'}</label>
         {['cassava', 'pepper'].map(c => <label key={c} className="chk"><input type="checkbox" checked={!!f.commodities?.includes(c)} onChange={() => tog(c)} />{hu(c)}</label>)}</>}
       {err && <div className="err">{err}</div>}{msg && <div className="ok">{msg}</div>}
-      <div className="acts"><button className="btn">Save profile</button></div>
+      <div className="acts"><button className="btn">Save profile</button><button type="button" className="btn alt" onClick={() => sb.auth.signOut()}>Sign out</button></div>
     </form>
   )
 }
 
 function ListingCard({ l }) {
+  const H = l.availability === 'expected_harvest'
   return (
-    <div className="card">
-      <div className="row"><h3>{l.commodity === 'cassava' ? 'Cassava' : 'Pepper'}{l.variety ? `: ${l.variety}` : ''}</h3><Badge s={l.availability} /></div>
-      <p style={{ margin: '.25rem 0' }}><b>{l.quantity} {l.unit}{l.unit === 'bags' ? ` (${l.bag_kg} kg each)` : ''}</b> in {l.town}, {l.lga}, {l.state}</p>
-      <p className="mute" style={{ margin: 0 }}>{l.availability === 'expected_harvest' ? `Expected harvest ${fmt(l.available_date)}` : `Available from ${fmt(l.available_date || l.created_at)}`} · {naira(l.price, l.price_unit)}</p>
-      <div className="acts"><Link className="btn sm" to={'/listing/' + l.id}>View details</Link></div>
-    </div>
+    <Link to={'/listing/' + l.id} className="lcard"><div className="card">
+      <div className="row"><h3>{hu(l.commodity)}{l.variety ? `, ${l.variety}` : ''}</h3><span className="qty">{l.quantity} {l.unit}</span></div>
+      <p className="mute">{l.town}, {l.state}</p>
+      <div className="pills"><Badge s="approved" t="Reviewed by EFIA" /><Badge s={l.availability} t={H ? `Harvest expected ${new Date(l.available_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : 'Available now'} /></div>
+      <div className="foot"><span>Listed {ago(l.created_at)}</span><span>{naira(l.price, l.price_unit)}</span></div>
+    </div></Link>
   )
 }
 
@@ -214,15 +215,15 @@ function Browse() {
   }, [q])
   return (
     <>
-      <h2>Find supply</h2>
-      <div className="card"><div className="grid">
-        <Sel label="Commodity" value={q.commodity} onChange={set('commodity')} opts={['cassava', 'pepper']} />
-        <Sel label="State" value={q.state} onChange={set('state')} opts={STATES} />
-        <Sel label="Availability" value={q.availability} onChange={set('availability')} opts={['available_now', 'expected_harvest']} />
-        <Inp label="Minimum quantity (tonnes)" type="number" min="0" value={q.minqty} onChange={set('minqty')} />
-        <Inp label="Keyword (variety, quality, town)" value={q.kw} onChange={set('kw')} />
-      </div></div>
-      {rows === null ? <p className="pad">Loading…</p> : rows.length === 0 ? <p className="pad">No approved listings match. Try removing a filter.</p> : rows.map(l => <ListingCard key={l.id} l={l} />)}
+      <h1>Find cassava and pepper supply you can trust</h1>
+      <input className="search" placeholder="Search variety, town or LGA" value={q.kw} onChange={set('kw')} aria-label="Search" />
+      <div className="chips">{[['', 'All'], ['cassava', 'Cassava'], ['pepper', 'Pepper']].map(([v, t]) => <button key={t} className={'chip' + (q.commodity === v ? ' on' : '')} onClick={() => setQ({ ...q, commodity: v })}>{t}</button>)}</div>
+      <div className="chips">
+        <select className="chip" value={q.state} onChange={set('state')} aria-label="State"><option value="">State</option>{STATES.map(s => <option key={s}>{s}</option>)}</select>
+        <select className="chip" value={q.minqty} onChange={set('minqty')} aria-label="Quantity"><option value="">Quantity</option>{[1, 5, 10, 25, 50].map(n => <option key={n} value={n}>{n}+ tonnes</option>)}</select>
+        <select className="chip" value={q.availability} onChange={set('availability')} aria-label="Availability"><option value="">Availability</option><option value="available_now">Available now</option><option value="expected_harvest">Expected harvest</option></select>
+      </div>
+      {rows === null ? <p className="pad">Loading…</p> : rows.length === 0 ? <p className="pad">No approved listings match. Try removing a filter.</p> : <div className="cards">{rows.map(l => <ListingCard key={l.id} l={l} />)}</div>}
     </>
   )
 }
@@ -248,21 +249,17 @@ function ListingView() {
   }
   return (
     <>
-      <div className="card">
-        <div className="row"><h2>{l.commodity === 'cassava' ? 'Cassava' : 'Pepper'}{l.variety ? `: ${l.variety}` : ''}</h2><Badge s={l.availability} /></div>
-        <div className="grid">
-          <p><b>Quantity</b><br />{l.quantity} {l.unit}{l.unit === 'bags' ? ` (${l.bag_kg} kg per bag)` : ''}</p>
-          <p><b>Location</b><br />{l.town}, {l.lga}, {l.state}</p>
-          <p><b>{l.availability === 'expected_harvest' ? 'Expected harvest' : 'Available from'}</b><br />{fmt(l.available_date || l.created_at)}</p>
-          <p><b>Price expectation</b><br />{naira(l.price, l.price_unit)}</p>
-          <p><b>Minimum order</b><br />{l.min_order || '-'}</p>
-          <p><b>Listing valid until</b><br />{fmt(l.expires_at)}</p>
-        </div>
-        <p><b>Quality / grade (supplier-reported)</b><br />{l.quality || 'Not stated'}</p>
-        <p><b>Delivery / collection</b><br />{l.delivery || 'Not stated'}</p>
-        <p className="mute">Information is submitted by the supplier. EFIA reviewed the listing before publishing but has not independently checked the produce.</p>
-      </div>
-      {sup && <div className="card"><h3>Supplier</h3><p>{sup.name} ({sup.kind}), {sup.lga}, {sup.state} <Badge s={sup.verification} /></p></div>}
+      <Link to={me.role === 'buyer' ? '/browse' : '/'} className="back">← Listings</Link>
+      <div className="hero2"><h1>{hu(l.commodity)}{l.variety ? `, ${l.variety}` : ''}</h1></div>
+      <div className="pills"><Badge s="approved" t="Reviewed by EFIA" /><Badge s={l.availability} t={l.availability === 'expected_harvest' ? 'Harvest expected' : 'Available now'} /></div>
+      <div className="tiles">{[
+        ['Quantity', `${l.quantity} ${l.unit}${l.unit === 'bags' ? ` (${l.bag_kg} kg each)` : ''}`], ['Minimum order', l.min_order || '-'],
+        ['Location', `${l.town}, ${l.lga}, ${l.state}`], [l.availability === 'expected_harvest' ? 'Expected harvest' : 'Available from', fmt(l.available_date || l.created_at)],
+        ['Quality (self-reported)', l.quality || 'Not stated'], ['Collection / delivery', l.delivery || 'Not stated'],
+        ['Price expectation', naira(l.price, l.price_unit)], ['Valid until', fmt(l.expires_at)],
+      ].map(([k, v]) => <div className="tile" key={k}><span>{k}</span><b>{v}</b></div>)}</div>
+      {sup && <div className="card sup"><span className="avatar">{(sup.name || '?').slice(0, 2).toUpperCase()}</span><div><h3 style={{ margin: 0 }}>{sup.name}</h3><span className="mute">{sup.kind} · {sup.state} · </span><Badge s={sup.verification} /></div></div>}
+      <p className="mute">Contact details stay private. Use messages on your request to talk to the supplier. EFIA reviews listings but does not guarantee quality, price or delivery.</p>
       {me.role === 'buyer' && (
         <form className="card" onSubmit={send}>
           <h3>Contact the supplier</h3>
@@ -275,7 +272,7 @@ function ListingView() {
           </div>
           <label>Message<textarea rows="3" value={f.message || ''} onChange={set('message')} /></label>
           {err && <div className="err">{err}</div>}
-          <div className="acts"><button className="btn" disabled={busy}>Send request</button></div>
+          <div className="acts"><button className="btn gold" disabled={busy}>Send request</button></div>
         </form>
       )}
     </>
@@ -421,6 +418,7 @@ function RequestView() {
           {me.role === 'admin' && <button className="btn sm alt" onClick={note}>Add admin note</button>}
         </div>
       </div>
+      <div className="card"><ol className="tl">{ORDER.map((st, i) => { const c = ORDER.indexOf(r.status), k = i < c || r.status === 'completed' ? 'done' : i === c ? 'cur' : ''; return <li key={st} className={k}><i>{k === 'done' ? '✓' : ''}</i>{hu(st)[0].toUpperCase() + hu(st).slice(1)}</li> })}</ol>{['cancelled', 'disputed'].includes(r.status) && <p><Badge s={r.status} /></p>}</div>
       <div className="card"><h3>Messages</h3>
         {msgs.length === 0 && <p className="mute">No messages yet.</p>}
         {msgs.map(m => <div key={m.id} className={'msg' + (m.sender_id === me.id ? ' me' : '')}>{m.body}<div className="mute">{new Date(m.created_at).toLocaleString('en-GB')}</div></div>)}
