@@ -79,7 +79,7 @@ function Gate({ roles, children }) {
 function Shell({ children }) {
   const { me } = useMe(), loc = useLocation(), [n, setN] = useState(0)
   useEffect(() => { sb.from('notifications').select('id', { count: 'exact', head: true }).eq('read', false).then(r => setN(r.count || 0)) }, [loc.pathname])
-  const links = me.role === 'buyer' ? [['/browse', 'Browse'], ['/requests', 'Requests']]
+  const links = me.role === 'buyer' ? [['/browse', 'Browse'], ['/saved', 'Saved'], ['/requests', 'Requests']]
     : me.role === 'supplier' ? [['/my-listings', 'Listings'], ['/requests', 'Requests']]
     : [['/admin', 'Admin'], ['/browse', 'Browse'], ['/requests', 'Requests']]
   return (
@@ -158,7 +158,7 @@ function Profile() {
   async function save(e) {
     e.preventDefault(); setErr(''); setMsg('')
     if (!f.contact_name || !f.phone || !f.state || !f.commodities?.length || !f.kind) return setErr('Fill in the required fields, including the type, state and at least one commodity.')
-    const { error } = await sb.from('profiles').update({ contact_name: f.contact_name, phone: f.phone, org_name: f.org_name, kind: f.kind, state: f.state, lga: f.lga, town: f.town, commodities: f.commodities }).eq('id', me.id)
+    const { error } = await sb.from('profiles').update({ contact_name: f.contact_name, phone: f.phone, org_name: f.org_name, kind: f.kind, state: f.state, lga: f.lga, town: f.town, commodities: f.commodities, notify_email: f.notify_email !== false, notify_sms: !!f.notify_sms }).eq('id', me.id)
     if (error) return setErr(error.message)
     await reload(); setMsg('Profile saved.')
   }
@@ -182,6 +182,9 @@ function Profile() {
       {!isAdmin && <><label>{me.role === 'buyer' ? 'Commodities you need *' : 'Commodities you supply *'}</label>
         {['cassava', 'pepper'].map(c => <label key={c} className="chk"><input type="checkbox" checked={!!f.commodities?.includes(c)} onChange={() => tog(c)} />{hu(c)}</label>)}</>}
       {err && <div className="err">{err}</div>}{msg && <div className="ok">{msg}</div>}
+      <label>Alerts by email or SMS (in-app alerts are always on)</label>
+      <label className="chk"><input type="checkbox" checked={f.notify_email !== false} onChange={e => setF({ ...f, notify_email: e.target.checked })} />Email me</label>
+      <label className="chk"><input type="checkbox" checked={!!f.notify_sms} onChange={e => setF({ ...f, notify_sms: e.target.checked })} />SMS me</label>
       <div className="acts"><button className="btn">Save profile</button><button type="button" className="btn alt" onClick={() => sb.auth.signOut()}>Sign out</button></div>
     </form>
   )
@@ -230,13 +233,15 @@ function Browse() {
 
 function ListingView() {
   const { id } = useParams(), { me } = useMe(), nav = useNavigate()
-  const [l, setL] = useState(), [sup, setSup] = useState(), [f, setF] = useState({ kind: 'enquiry' }), [err, setErr] = useState(''), [busy, setBusy] = useState(false)
+  const [sv, setSv] = useState({}), [l, setL] = useState(), [sup, setSup] = useState(), [f, setF] = useState({ kind: 'enquiry' }), [err, setErr] = useState(''), [busy, setBusy] = useState(false)
   useEffect(() => {
     sb.from('listings').select('*').eq('id', id).single().then(async ({ data }) => {
       setL(data || null)
       if (data) { const { data: p } = await sb.from('party_public').select('*').eq('id', data.supplier_id).single(); setSup(p); setF(x => ({ ...x, unit: data.unit, delivery_location: me.state || '' })) }
     })
   }, [id])
+  useEffect(() => { sb.from('saved').select('kind,target_id').then(({ data }) => setSv(Object.fromEntries((data || []).map(x => [x.kind + x.target_id, 1])))) }, [])
+  const tog = async (kind, tid) => { const k = kind + tid; if (sv[k]) await sb.from('saved').delete().match({ kind, target_id: tid }); else await sb.from('saved').insert({ kind, target_id: tid }); setSv({ ...sv, [k]: !sv[k] }) }
   if (l === undefined) return <p className="pad">Loading…</p>
   if (l === null) return <p className="pad">This listing is no longer available.</p>
   const set = k => e => setF({ ...f, [k]: e.target.value })
@@ -260,6 +265,8 @@ function ListingView() {
       ].map(([k, v]) => <div className="tile" key={k}><span>{k}</span><b>{v}</b></div>)}</div>
       {sup && <div className="card sup"><span className="avatar">{(sup.name || '?').slice(0, 2).toUpperCase()}</span><div><h3 style={{ margin: 0 }}>{sup.name}</h3><span className="mute">{sup.kind} · {sup.state} · </span><Badge s={sup.verification} /></div></div>}
       <p className="mute">Contact details stay private. Use messages on your request to talk to the supplier. EFIA reviews listings but does not guarantee quality, price or delivery.</p>
+      {me.role === 'buyer' && <div className="acts"><button className="btn sm alt" onClick={() => tog('listing', l.id)}>{sv['listing' + l.id] ? 'Listing saved ✓' : 'Save listing'}</button><button className="btn sm alt" onClick={() => tog('supplier', l.supplier_id)}>{sv['supplier' + l.supplier_id] ? 'Supplier saved ✓' : 'Save supplier'}</button></div>}
+      <Report listingId={l.id} />
       {me.role === 'buyer' && (
         <form className="card" onSubmit={send}>
           <h3>Contact the supplier</h3>
@@ -424,8 +431,60 @@ function RequestView() {
         {msgs.map(m => <div key={m.id} className={'msg' + (m.sender_id === me.id ? ' me' : '')}>{m.body}<div className="mute">{new Date(m.created_at).toLocaleString('en-GB')}</div></div>)}
         <form onSubmit={send}><textarea rows="2" value={body} onChange={e => setBody(e.target.value)} placeholder="Write a message" /><div className="acts"><button className="btn sm">Send message</button></div></form>
       </div>
+      <Report requestId={id} listingId={r.listing_id} />
     </>
   )
+}
+
+function Report({ listingId, requestId }) {
+  const [open, setOpen] = useState(false), [f, setF] = useState({ reason: 'inaccurate' }), [done, setDone] = useState(false)
+  if (done) return <p className="ok">Thanks. EFIA will review your report.</p>
+  if (!open) return <p><button className="btn sm alt" onClick={() => setOpen(true)}>Report an issue</button></p>
+  return (
+    <div className="card"><h3>Report an issue</h3>
+      <Sel label="What happened?" value={f.reason} onChange={e => setF({ ...f, reason: e.target.value })} opts={[['scam', 'Suspected scam'], ['inaccurate', 'Inaccurate listing'], ['harassment', 'Harassment'], ['dispute', 'Transaction dispute'], ['other', 'Other']]} />
+      <label>Details<textarea rows="3" value={f.details || ''} onChange={e => setF({ ...f, details: e.target.value })} /></label>
+      <div className="acts"><button className="btn" onClick={async () => { const { error } = await sb.from('reports').insert({ ...f, listing_id: listingId || null, request_id: requestId || null }); error ? alert(error.message) : setDone(true) }}>Send report</button></div>
+    </div>
+  )
+}
+
+function Saved() {
+  const [ls, setLs] = useState(null), [ss, setSs] = useState([])
+  useEffect(() => { (async () => {
+    const { data } = await sb.from('saved').select('*').order('created_at', { ascending: false })
+    const ids = k => (data || []).filter(x => x.kind === k).map(x => x.target_id), a = ids('listing'), b = ids('supplier')
+    setLs(a.length ? (await sb.from('listings').select('*').in('id', a)).data || [] : [])
+    setSs(b.length ? (await sb.from('party_public').select('*').in('id', b)).data || [] : [])
+  })() }, [])
+  if (!ls) return <p className="pad">Loading…</p>
+  return (
+    <>
+      <h2>Saved listings</h2>
+      {ls.length === 0 ? <p className="pad">Nothing saved yet. Open a listing and tap Save listing.</p> : <div className="cards">{ls.map(l => <ListingCard key={l.id} l={l} />)}</div>}
+      <h2 style={{ marginTop: '1.5rem' }}>Saved suppliers</h2>
+      {ss.length === 0 ? <p className="pad">No saved suppliers.</p> : ss.map(u => <div className="card" key={u.id}><h3>{u.name}</h3><span className="mute">{u.kind} · {u.lga}, {u.state} · </span><Badge s={u.verification} /></div>)}
+    </>
+  )
+}
+
+function Reports() {
+  const [rows, setRows] = useState(null), names = useNames(rows, ['reporter_id'])
+  const load = () => sb.from('reports').select('*').order('status').order('created_at', { ascending: false }).then(({ data }) => setRows(data || []))
+  useEffect(() => { load() }, [])
+  if (!rows) return <p className="pad">Loading…</p>
+  return rows.length === 0 ? <p className="pad">No reports.</p> : rows.map(r => (
+    <div className="card" key={r.id}>
+      <div className="row"><h3>{hu(r.reason)}</h3><Badge s={r.status === 'open' ? 'pending' : 'completed'} t={r.status} /></div>
+      <p className="mute">From {names[r.reporter_id]} · {fmt(r.created_at)}</p><p>{r.details || 'No details'}</p>
+      {r.admin_note && <p><b>Note:</b> {r.admin_note}</p>}
+      <div className="acts">
+        {r.listing_id && <Link className="btn sm alt" to={'/listing/' + r.listing_id}>View listing</Link>}
+        {r.request_id && <Link className="btn sm alt" to={'/requests/' + r.request_id}>View request</Link>}
+        {r.status === 'open' && <button className="btn sm" onClick={async () => { const t = prompt('Resolution note:'); if (!t) return; await sb.from('reports').update({ status: 'resolved', admin_note: t }).eq('id', r.id); load() }}>Mark resolved</button>}
+      </div>
+    </div>
+  ))
 }
 
 function Notifs() {
@@ -445,8 +504,8 @@ function Admin() {
   return (
     <>
       <h2>Admin</h2>
-      <div className="tabs">{['overview', 'review', 'users', 'audit'].map(t => <button key={t} className={'btn sm' + (tab === t ? '' : ' alt')} onClick={() => setTab(t)}>{t === 'review' ? 'Listing review' : t[0].toUpperCase() + t.slice(1)}</button>)}</div>
-      {tab === 'overview' && <Overview />}{tab === 'review' && <Review />}{tab === 'users' && <Users />}{tab === 'audit' && <Audit />}
+      <div className="tabs">{['overview', 'review', 'users', 'reports', 'audit'].map(t => <button key={t} className={'btn sm' + (tab === t ? '' : ' alt')} onClick={() => setTab(t)}>{t === 'review' ? 'Listing review' : t[0].toUpperCase() + t.slice(1)}</button>)}</div>
+      {tab === 'overview' && <Overview />}{tab === 'review' && <Review />}{tab === 'users' && <Users />}{tab === 'reports' && <Reports />}{tab === 'audit' && <Audit />}
     </>
   )
 }
@@ -541,6 +600,7 @@ export default function App() {
         <Route path="/my-listings/:id" element={<Gate roles={['supplier']}><ListingForm /></Gate>} />
         <Route path="/requests" element={<Gate><Requests /></Gate>} />
         <Route path="/requests/:id" element={<Gate><RequestView /></Gate>} />
+        <Route path="/saved" element={<Gate roles={['buyer']}><Saved /></Gate>} />
         <Route path="/notifications" element={<Gate><Notifs /></Gate>} />
         <Route path="/admin" element={<Gate roles={['admin']}><Admin /></Gate>} />
         <Route path="*" element={<Navigate to="/" replace />} />
